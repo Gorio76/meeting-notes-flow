@@ -13,13 +13,13 @@ export function SummaryStep() {
   const formatCurrency = (val: number) =>
     new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(val);
 
-  // Plain text helpers (robusti per email/CRM)
+  // Helpers (robusti per email/CRM)
   const fmt2it = (n: number) => {
     const v = Number.isFinite(n) ? n : 0;
     return v.toFixed(2).replace('.', ',');
   };
 
-  const cleanOneLine = (s: string) => s.toString().replace(/\s+/g, ' ').trim();
+  const oneLine = (s: unknown) => (s ?? '').toString().replace(/\s+/g, ' ').trim();
 
   const cleanBulletLine = (s: string) =>
     s
@@ -34,92 +34,83 @@ export function SummaryStep() {
       .map((l) => cleanBulletLine(l))
       .filter((l) => l.length > 0);
 
-  const safe = (val: unknown) => (val === null || val === undefined ? '' : val.toString());
+  const keyify = (title: string) => title.toUpperCase().replace(/\s+/g, '_');
 
   const generateReport = () => {
-    const now = new Date();
-    const dateStr = now.toLocaleDateString('it-IT');
+    const dateStr = new Date().toLocaleDateString('it-IT');
 
-    // Estrai ragione sociale e referente (se presenti)
+    // prova a prendere azienda/referente dal composite
     let company = '';
     let referent = '';
 
-    // Nota: nel tuo codice precedente provi a leggere answers['company_referent'] ma il tipo
-    // del question è 'composite_company'. Qui gestiamo entrambi, così non impazzisci.
     const compositeKey = QUESTIONS.find((q) => q.inputType === 'composite_company')?.id;
-    const compositeVal = (compositeKey && answers[compositeKey]) || answers['company_referent'];
+    const compositeVal = (compositeKey && answers[compositeKey]) || (answers as any)['company_referent'];
 
     if (compositeVal) {
       try {
         const p = JSON.parse(compositeVal);
-        company = cleanOneLine(p.company || '');
-        referent = cleanOneLine(p.referent || p.referente || '');
+        company = oneLine(p.company || '');
+        referent = oneLine(p.referent || p.referente || '');
       } catch {
-        // se non è JSON, lo lasciamo in chiaro più sotto come riga testuale
+        // ignore
       }
     }
 
     const lines: string[] = [];
 
-    lines.push('MEETING_REPORT');
-    lines.push(`DATA; ${dateStr}`);
-
+    // Header compatto, a righe
+    lines.push(`MEETING_REPORT; ${dateStr}`);
     if (company) lines.push(`RAGIONE_SOCIALE; ${company}`);
     if (referent) lines.push(`REFERENTE; ${referent}`);
+    lines.push(''); // riga vuota
 
-    lines.push('----------------------------------------');
-
-    // Domande standard: una riga per punto
+    // Domande: una riga per punto
     QUESTIONS.forEach((q) => {
-      if (q.inputType === 'order_manager') return; // ordine gestito sotto
+      if (q.inputType === 'order_manager') return;
 
       const val = answers[q.id];
       if (!val) return;
 
-      const key = q.title.toUpperCase();
+      const k = keyify(q.title);
 
       if (q.inputType === 'composite_company') {
-        // già estratto sopra; comunque mettiamo righe anche se non parsabile
+        // se non è parsabile, comunque una riga
         try {
           const p = JSON.parse(val);
-          const c = cleanOneLine(p.company || '');
-          const r = cleanOneLine(p.referent || p.referente || '');
-          if (c) lines.push(`${key}; AZIENDA; ${c}`);
-          if (r) lines.push(`${key}; REFERENTE; ${r}`);
+          const c = oneLine(p.company || '');
+          const r = oneLine(p.referent || p.referente || '');
+          if (c) lines.push(`${k}; AZIENDA; ${c}`);
+          if (r) lines.push(`${k}; REFERENTE; ${r}`);
         } catch {
-          lines.push(`${key}; ${cleanOneLine(val)}`);
+          lines.push(`${k}; ${oneLine(val)}`);
         }
-        lines.push('----------------------------------------');
+        lines.push('');
         return;
       }
 
-      // Se il campo è multilinea (punti), spezzalo in più righe
-      // Nota: non hai esplicitato il tipo nel questions.ts, quindi usiamo un check pragmatico:
-      // se contiene newline, lo trattiamo come lista.
       if (typeof val === 'string' && val.includes('\n')) {
         const bullets = splitToBullets(val);
-        if (bullets.length > 0) {
-          bullets.forEach((b) => lines.push(`${key}; ${b}`));
-          lines.push('----------------------------------------');
+        if (bullets.length) {
+          bullets.forEach((b) => lines.push(`${k}; ${b}`));
+          lines.push('');
           return;
         }
       }
 
-      // Altrimenti una riga singola
-      lines.push(`${key}; ${cleanOneLine(val)}`);
-      lines.push('----------------------------------------');
+      lines.push(`${k}; ${oneLine(val)}`);
+      lines.push('');
     });
 
-    // ORDINE: separatore ; + 4 sconti visibili
+    // ORDINE: ; + 4 sconti visibili + netto unit + totale riga
     if (orderItems.length > 0) {
-      lines.push('ORDINE');
+      lines.push('ORDINE;');
       lines.push(
         'CODICE; DESCRIZIONE; QTA; LISTINO_LORDO; SCONTO1_% ; SCONTO2_% ; SCONTO3_% ; SCONTO4_% ; NETTO_UNIT; TOTALE_RIGA'
       );
 
       let grandTotal = 0;
 
-      orderItems.forEach((item) => {
+      orderItems.forEach((item: any) => {
         const { netPrice, total } = calculateLineItem(item);
         grandTotal += total;
 
@@ -128,11 +119,11 @@ export function SummaryStep() {
         const d3 = item?.discount3 ?? item?.discount_3 ?? item?.discounts?.[2] ?? 0;
         const d4 = item?.discount4 ?? item?.discount_4 ?? item?.discounts?.[3] ?? 0;
 
-        const code = cleanOneLine(safe(item.code));
-        const desc = cleanOneLine(safe(item.description));
-        const qty = safe(item.quantity ?? 0);
+        const code = oneLine(item.code);
+        const desc = oneLine(item.description);
+        const qty = item.quantity ?? 0;
 
-        // Listino lordo: nel tuo codice precedente usi item.grossPrice
+        // listino lordo: prova grossPrice, altrimenti listPrice
         const gross = Number(item.grossPrice ?? item.listPrice ?? 0);
 
         lines.push(
@@ -140,43 +131,45 @@ export function SummaryStep() {
         );
       });
 
-      lines.push('----------------------------------------');
+      lines.push('');
       lines.push(`TOTALE_NETTO_ORDINE; ${fmt2it(grandTotal)}`);
     }
 
-    return lines.join('\n');
+    // IMPORTANTISSIMO per mailto/Gmail: CRLF
+    return lines.join('\r\n');
   };
 
   const handleCopy = () => {
     const text = generateReport();
     navigator.clipboard.writeText(text);
-    toast({
-      title: "Copiato negli appunti",
-      duration: 2000,
-    });
+    toast({ title: 'Copiato negli appunti', duration: 2000 });
   };
 
   const handleEmail = () => {
+    if (!emailRecipient?.trim()) {
+      toast({ title: 'Inserisci una email destinatario (anche solo per test)', duration: 2500 });
+      return;
+    }
+
     const text = generateReport();
 
-    // Prova a ricavare ragione sociale per subject
     let clientName = 'Nuovo Meeting';
-
     const compositeKey = QUESTIONS.find((q) => q.inputType === 'composite_company')?.id;
-    const compositeVal = (compositeKey && answers[compositeKey]) || answers['company_referent'];
+    const compositeVal = (compositeKey && answers[compositeKey]) || (answers as any)['company_referent'];
 
     if (compositeVal) {
       try {
         const cData = JSON.parse(compositeVal || '{}');
-        if (cData.company) clientName = cleanOneLine(cData.company);
+        if (cData.company) clientName = oneLine(cData.company);
       } catch {
-        // fallback: non JSON, ignora
+        // ignore
       }
     }
 
     const dateStr = new Date().toLocaleDateString('it-IT');
     const subject = `Meeting Report; ${clientName}; ${dateStr}`;
 
+    // già CRLF dentro, Gmail lo rispetta molto meglio così
     const body = encodeURIComponent(text);
 
     const mailtoLink = `mailto:${emailRecipient}?subject=${encodeURIComponent(subject)}&body=${body}`;
@@ -204,9 +197,7 @@ export function SummaryStep() {
               return (
                 <div key={q.id} className="border-b border-border pb-4 last:border-0 group relative">
                   <div className="flex justify-between items-baseline mb-3">
-                    <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-                      {q.title}
-                    </h3>
+                    <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{q.title}</h3>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -243,7 +234,9 @@ export function SummaryStep() {
                       </tbody>
                       <tfoot className="bg-muted/30 font-bold">
                         <tr>
-                          <td colSpan={2} className="p-2 text-right">TOTALE</td>
+                          <td colSpan={2} className="p-2 text-right">
+                            TOTALE
+                          </td>
                           <td className="p-2 text-right">{formatCurrency(grandTotal)}</td>
                         </tr>
                       </tfoot>
@@ -261,15 +254,13 @@ export function SummaryStep() {
               try {
                 const p = JSON.parse(val);
                 displayVal = `Azienda: ${p.company}\nReferente: ${p.referent}`;
-              } catch { }
+              } catch {}
             }
 
             return (
               <div key={q.id} className="border-b border-border pb-4 last:border-0 group relative">
                 <div className="flex justify-between items-baseline mb-1">
-                  <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-                    {q.title}
-                  </h3>
+                  <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{q.title}</h3>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -279,20 +270,18 @@ export function SummaryStep() {
                     <PenLine className="h-3 w-3" />
                   </Button>
                 </div>
-                <div className="text-base whitespace-pre-wrap leading-relaxed">
-                  {displayVal}
-                </div>
+                <div className="text-base whitespace-pre-wrap leading-relaxed">{displayVal}</div>
               </div>
             );
           })}
-          {Object.values(answers).every(v => !v) && orderItems.length === 0 && (
+
+          {Object.values(answers).every((v) => !v) && orderItems.length === 0 && (
             <p className="text-center text-muted-foreground italic py-10">Nessun appunto preso.</p>
           )}
         </div>
       </motion.div>
 
       <div className="pt-4 mt-auto border-t bg-background/80 backdrop-blur-sm space-y-4">
-
         <div className="space-y-2">
           <label className="text-xs font-medium text-muted-foreground ml-1">Invia a:</label>
           <Input
@@ -320,7 +309,12 @@ export function SummaryStep() {
             <ArrowLeft className="mr-2 h-4 w-4" />
             Indietro
           </Button>
-          <Button variant="ghost" size="sm" onClick={reset} className="text-destructive hover:text-destructive hover:bg-destructive/10">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={reset}
+            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+          >
             <RefreshCw className="mr-2 h-4 w-4" />
             Nuovo Meeting
           </Button>
